@@ -12,9 +12,7 @@ use std::path::PathBuf;
 pub enum ScanStatus {
     PendingCopy { year: i32, month: u32, dest_path: PathBuf },
     PendingMove { year: i32, month: u32, dest_path: PathBuf },
-    DuplicateSkipped,
     NoDateSkipped,
-    Error(String),
 }
 
 #[derive(Clone, Debug)]
@@ -343,9 +341,7 @@ impl PhotoFixApp {
             let total_count = results.len();
             let mut pending_copy = 0;
             let mut pending_move = 0;
-            let mut duplicate = 0;
             let mut nodate = 0;
-            let mut error = 0;
 
             for res in &results {
                 let file_name = res.src.file_name().unwrap_or_default().to_string_lossy();
@@ -358,24 +354,16 @@ impl PhotoFixApp {
                         pending_move += 1;
                         scan_logs.push(format!("[move] {} -> {}/{}", file_name, year, crate::worker::month_name(*month)));
                     }
-                    ScanStatus::DuplicateSkipped => {
-                        duplicate += 1;
-                        scan_logs.push(format!("[skip-dup] {}", file_name));
-                    }
                     ScanStatus::NoDateSkipped => {
                         nodate += 1;
                         scan_logs.push(format!("[skip-no-date] {}", file_name));
-                    }
-                    ScanStatus::Error(e) => {
-                        error += 1;
-                        scan_logs.push(format!("[skip-err] {} - {}", file_name, e));
                     }
                 }
             }
 
             let summary = format!(
-                "Scan Done! Total: {}, Ready: {}, Duplicate Skips: {}, Missing Date Skips: {}, Errors: {}",
-                total_count, pending_copy + pending_move, duplicate, nodate, error
+                "Scan Done! Total: {}, Ready: {}, Missing Date Skips: {}",
+                total_count, pending_copy + pending_move, nodate
             );
             scan_logs.push("---".to_string());
             scan_logs.push(summary.clone());
@@ -559,8 +547,6 @@ pub mod worker {
             })
             .collect();
 
-        // Dry-run planning with simulated destination checks to handle collisions between files inside the same run
-        let mut occupied = std::collections::HashMap::<PathBuf, u64>::new();
         let mut results = Vec::new();
 
         for (img_path, date) in processed {
@@ -577,77 +563,12 @@ pub mod worker {
                 }
             };
 
-            let dest_dir = dst.join(format!("{}", year)).join(month_name(month));
-            let mut dest_file = dest_dir.join(&file_name);
-            let src_size = std::fs::metadata(&img_path).map(|m| m.len()).unwrap_or(0);
-
-            // Check if file exists either in reality or in our simulation plan
-            let exists = dest_file.exists() || occupied.contains_key(&dest_file);
-            if exists {
-                let size = if occupied.contains_key(&dest_file) {
-                    occupied[&dest_file]
-                } else {
-                    std::fs::metadata(&dest_file).map(|m| m.len()).unwrap_or(0)
-                };
-
-                if size == src_size {
-                    results.push(ScanResult {
-                        src: img_path.clone(),
-                        status: ScanStatus::DuplicateSkipped,
-                    });
-                    continue;
-                }
-
-                // Resolve name collision using hyphenated suffix
-                let stem = img_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-                let ext = img_path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
-                
-                let mut suffix = 1;
-                let resolved;
-                loop {
-                    let new_name = if ext.is_empty() {
-                        format!("{}-{}", stem, suffix)
-                    } else {
-                        format!("{}-{}.{}", stem, suffix, ext)
-                    };
-                    
-                    let candidate = dest_dir.join(&new_name);
-                    let candidate_exists = candidate.exists() || occupied.contains_key(&candidate);
-                    if candidate_exists {
-                        let candidate_size = if occupied.contains_key(&candidate) {
-                            occupied[&candidate]
-                        } else {
-                            std::fs::metadata(&candidate).map(|m| m.len()).unwrap_or(0)
-                        };
-
-                        if candidate_size == src_size {
-                            results.push(ScanResult {
-                                src: img_path.clone(),
-                                status: ScanStatus::DuplicateSkipped,
-                            });
-                            resolved = false;
-                            break;
-                        }
-                        suffix += 1;
-                    } else {
-                        dest_file = candidate;
-                        resolved = true;
-                        break;
-                    }
-                }
-
-                if !resolved {
-                    continue;
-                }
-            }
-
-            // Reserve in simulation map
-            occupied.insert(dest_file.clone(), src_size);
+            let dest_path = dst.join(format!("{}", year)).join(month_name(month)).join(&file_name);
 
             let status = if use_copy {
-                ScanStatus::PendingCopy { year, month, dest_path: dest_file }
+                ScanStatus::PendingCopy { year, month, dest_path }
             } else {
-                ScanStatus::PendingMove { year, month, dest_path: dest_file }
+                ScanStatus::PendingMove { year, month, dest_path }
             };
 
             results.push(ScanResult {
@@ -673,6 +594,16 @@ pub mod worker {
 
             match res.status {
                 ScanStatus::PendingCopy { year, month, dest_path } => {
+                    if dest_path.exists() {
+                        skipped += 1;
+                        let _ = tx.send(WorkerMsg::SortProgress {
+                            current: i + 1,
+                            total,
+                            file: format!("[exists] {}", file_name),
+                        });
+                        continue;
+                    }
+
                     if let Some(parent) = dest_path.parent() {
                         if let Err(e) = std::fs::create_dir_all(parent) {
                             errors += 1;
@@ -705,6 +636,16 @@ pub mod worker {
                     }
                 }
                 ScanStatus::PendingMove { year, month, dest_path } => {
+                    if dest_path.exists() {
+                        skipped += 1;
+                        let _ = tx.send(WorkerMsg::SortProgress {
+                            current: i + 1,
+                            total,
+                            file: format!("[exists] {}", file_name),
+                        });
+                        continue;
+                    }
+
                     if let Some(parent) = dest_path.parent() {
                         if let Err(e) = std::fs::create_dir_all(parent) {
                             errors += 1;
@@ -741,28 +682,12 @@ pub mod worker {
                         }
                     }
                 }
-                ScanStatus::DuplicateSkipped => {
-                    skipped += 1;
-                    let _ = tx.send(WorkerMsg::SortProgress {
-                        current: i + 1,
-                        total,
-                        file: format!("[skip-dup] {}", file_name),
-                    });
-                }
                 ScanStatus::NoDateSkipped => {
                     skipped += 1;
                     let _ = tx.send(WorkerMsg::SortProgress {
                         current: i + 1,
                         total,
                         file: format!("[skip-no-date] {}", file_name),
-                    });
-                }
-                ScanStatus::Error(e) => {
-                    errors += 1;
-                    let _ = tx.send(WorkerMsg::SortProgress {
-                        current: i + 1,
-                        total,
-                        file: format!("[skip-err] {} - {}", file_name, e),
                     });
                 }
             }
