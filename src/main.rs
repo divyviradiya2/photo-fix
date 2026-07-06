@@ -40,12 +40,20 @@ pub enum AppButtonState {
 
 #[derive(Default, NwgUi)]
 pub struct PhotoFixApp {
+    // ── Embedded Resources ──────────────────────────────────────
+    #[nwg_resource]
+    embed: nwg::EmbedResource,
+
+    #[nwg_resource(source_embed: Some(&data.embed), source_embed_id: 1)]
+    app_icon: nwg::Icon,
+
     // ── Main Window ──────────────────────────────────────────────
     #[nwg_control(
         size: (538, 310),
         position: (300, 200),
         title: "Photo Fix",
-        flags: "WINDOW|VISIBLE"
+        flags: "WINDOW|VISIBLE",
+        icon: Some(&data.app_icon)
     )]
     #[nwg_events(
         OnWindowClose: [PhotoFixApp::on_exit],

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Photo Fix Logo" width="160">
+</p>
+
 # Photo Fix
 
 A lightweight, high-performance photo sorting utility for Windows. Scans a source folder for images, extracts date information from EXIF metadata, and automatically organizes them into `Year/Month` folders.
