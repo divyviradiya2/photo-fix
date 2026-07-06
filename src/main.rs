@@ -447,44 +447,58 @@ pub mod worker {
         images
     }
 
-    /// Extract DateTimeOriginal from EXIF, or fall back to file modified time.
+    fn parse_exif_date(s: &str) -> Option<(i32, u32)> {
+        let parts: Vec<&str> = s.split(|c| c == ':' || c == ' ' || c == '-').collect();
+        if parts.len() >= 2 {
+            if let (Ok(year), Ok(month)) = (parts[0].parse::<i32>(), parts[1].parse::<u32>()) {
+                if year > 1900 && year < 2200 && month >= 1 && month <= 12 {
+                    return Some((year, month));
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract capture/born date strictly from EXIF metadata.
     fn get_date(path: &PathBuf) -> Option<(i32, u32)> {
-        // Try EXIF first
         if let Ok(file) = std::fs::File::open(path) {
             let mut buf_reader = std::io::BufReader::new(&file);
             if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf_reader) {
+                // 1. Try DateTimeOriginal
                 if let Some(field) = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY) {
                     if let exif::Value::Ascii(ref vec) = field.value {
                         if let Some(bytes) = vec.first() {
                             let s = String::from_utf8_lossy(bytes);
-                            // Format: "YYYY:MM:DD HH:MM:SS"
-                            let parts: Vec<&str> = s.split(|c| c == ':' || c == ' ').collect();
-                            if parts.len() >= 2 {
-                                if let (Ok(year), Ok(month)) =
-                                    (parts[0].parse::<i32>(), parts[1].parse::<u32>())
-                                {
-                                    if year > 1900 && year < 2200 && month >= 1 && month <= 12 {
-                                        return Some((year, month));
-                                    }
-                                }
+                            if let Some(date) = parse_exif_date(&s) {
+                                return Some(date);
+                            }
+                        }
+                    }
+                }
+                // 2. Try DateTimeDigitized
+                if let Some(field) = exif.get_field(exif::Tag::DateTimeDigitized, exif::In::PRIMARY) {
+                    if let exif::Value::Ascii(ref vec) = field.value {
+                        if let Some(bytes) = vec.first() {
+                            let s = String::from_utf8_lossy(bytes);
+                            if let Some(date) = parse_exif_date(&s) {
+                                return Some(date);
+                            }
+                        }
+                    }
+                }
+                // 3. Try DateTime
+                if let Some(field) = exif.get_field(exif::Tag::DateTime, exif::In::PRIMARY) {
+                    if let exif::Value::Ascii(ref vec) = field.value {
+                        if let Some(bytes) = vec.first() {
+                            let s = String::from_utf8_lossy(bytes);
+                            if let Some(date) = parse_exif_date(&s) {
+                                return Some(date);
                             }
                         }
                     }
                 }
             }
         }
-
-        // Fallback: file creation time only on Windows
-        if let Ok(meta) = std::fs::metadata(path) {
-            if let Ok(created) = meta.created() {
-                let datetime: chrono::DateTime<chrono::Local> = created.into();
-                use chrono::Datelike;
-                if datetime.year() > 1900 && datetime.year() < 2200 {
-                    return Some((datetime.year(), datetime.month()));
-                }
-            }
-        }
-
         None
     }
 
