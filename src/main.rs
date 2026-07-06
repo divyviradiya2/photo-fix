@@ -448,17 +448,61 @@ pub mod worker {
                 continue;
             }
 
-            let dest_file = dest_dir.join(&file_name);
+            let src_size = std::fs::metadata(&img_path).map(|m| m.len()).unwrap_or(0);
+            let mut dest_file = dest_dir.join(&file_name);
 
-            // Skip if destination already exists
             if dest_file.exists() {
-                skipped += 1;
-                let _ = tx.send(WorkerMsg::Progress {
-                    current: i + 1,
-                    total,
-                    file: format!("[exists] {}", file_name),
-                });
-                continue;
+                let mut resolved = true;
+                // Check if it's a duplicate (size matches)
+                let dest_size = std::fs::metadata(&dest_file).map(|m| m.len()).unwrap_or(0);
+                if dest_size == src_size {
+                    skipped += 1;
+                    let _ = tx.send(WorkerMsg::Progress {
+                        current: i + 1,
+                        total,
+                        file: format!("[exists-dup] {}", file_name),
+                    });
+                    continue;
+                }
+
+                // If sizes differ, resolve the name collision using hyphen suffix format (photo-1.jpg)
+                let stem = img_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                let ext = img_path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+                
+                let mut suffix = 1;
+                loop {
+                    let new_name = if ext.is_empty() {
+                        format!("{}-{}", stem, suffix)
+                    } else {
+                        format!("{}-{}.{}", stem, suffix, ext)
+                    };
+                    
+                    let candidate = dest_dir.join(&new_name);
+                    if candidate.exists() {
+                        let candidate_size = std::fs::metadata(&candidate).map(|m| m.len()).unwrap_or(0);
+                        if candidate_size == src_size {
+                            // Found an existing file that matches the source content exactly, treat as duplicate and skip
+                            skipped += 1;
+                            let _ = tx.send(WorkerMsg::Progress {
+                                current: i + 1,
+                                total,
+                                file: format!("[exists-dup] {}", new_name),
+                            });
+                            resolved = false;
+                            break;
+                        }
+                        suffix += 1;
+                    } else {
+                        dest_file = candidate;
+                        resolved = true;
+                        break;
+                    }
+                }
+                
+                // If resolving determined it was a duplicate and skipped
+                if !resolved {
+                    continue;
+                }
             }
 
             let result = if use_copy {
