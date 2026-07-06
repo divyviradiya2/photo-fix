@@ -301,7 +301,6 @@ dependencies = [
  "native-windows-derive",
  "native-windows-gui",
  "rayon",
- "winapi",
 ]
 
 [[package]]
