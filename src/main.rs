@@ -127,6 +127,7 @@ pub struct PhotoFixApp {
     is_running: RefCell<bool>,
     scan_results: RefCell<Vec<ScanResult>>,
     btn_state: RefCell<AppButtonState>,
+    log_lines: RefCell<Vec<String>>,
     log_expanded: RefCell<bool>,
 }
 
@@ -185,17 +186,15 @@ impl PhotoFixApp {
     }
 
     fn log_batch(&self, msgs: &[String]) {
-        let current = self.txt_log.text();
-        let mut lines: Vec<&str> = current.split("\r\n").filter(|s| !s.is_empty()).collect();
-        
+        let mut lines = self.log_lines.borrow_mut();
         for msg in msgs {
-            lines.push(msg);
+            lines.push(msg.clone());
         }
 
         // Keep only the last 300 lines
         if lines.len() > 300 {
             let start = lines.len() - 300;
-            lines = lines[start..].to_vec();
+            *lines = lines[start..].to_vec();
         }
 
         let new_text = lines.join("\r\n");
@@ -258,6 +257,15 @@ impl PhotoFixApp {
             return;
         }
 
+        if src_path == dst_path || dst_path.starts_with(&src_path) {
+            nwg::modal_info_message(
+                &self.window,
+                "Photo Fix",
+                "Destination directory cannot be the same as or inside the source directory.",
+            );
+            return;
+        }
+
         let use_copy = self.combo_op.selection() == Some(0);
         let year_only = self.combo_structure.selection() == Some(1);
 
@@ -266,6 +274,7 @@ impl PhotoFixApp {
         self.progress.set_pos(0);
         self.lbl_status.set_text("Scanning...");
         self.txt_log.set_text("");
+        self.log_lines.borrow_mut().clear();
         self.log(&format!("Scanning Source: {}", src));
         self.log("---");
 
@@ -299,6 +308,7 @@ impl PhotoFixApp {
         self.progress.set_pos(0);
         self.lbl_status.set_text("Sorting...");
         self.txt_log.set_text("");
+        self.log_lines.borrow_mut().clear();
         self.log("Starting Sorting Execution...");
         self.log("---");
 
@@ -326,26 +336,34 @@ impl PhotoFixApp {
         let mut scan_done_msg = None;
         let mut sort_done_msg = None;
         let mut error_msg = None;
+        let mut disconnected = false;
 
-        // Drain all pending messages
-        while let Ok(msg) = rx.try_recv() {
-            match msg {
-                WorkerMsg::ScanProgress { current, total, file } => {
-                    logs.push(format!("Scanned: {}", file));
-                    last_scan_progress = Some((current, total));
-                }
-                WorkerMsg::ScanDone(results) => {
-                    scan_done_msg = Some(results);
-                }
-                WorkerMsg::SortProgress { current, total, file } => {
-                    logs.push(file);
-                    last_sort_progress = Some((current, total));
-                }
-                WorkerMsg::SortDone { moved, skipped, errors } => {
-                    sort_done_msg = Some((moved, skipped, errors));
-                }
-                WorkerMsg::Error(e) => {
-                    error_msg = Some(e);
+        // Drain all pending messages, detecting worker crashes
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => match msg {
+                    WorkerMsg::ScanProgress { current, total, file } => {
+                        logs.push(format!("Scanned: {}", file));
+                        last_scan_progress = Some((current, total));
+                    }
+                    WorkerMsg::ScanDone(results) => {
+                        scan_done_msg = Some(results);
+                    }
+                    WorkerMsg::SortProgress { current, total, file } => {
+                        logs.push(file);
+                        last_sort_progress = Some((current, total));
+                    }
+                    WorkerMsg::SortDone { moved, skipped, errors } => {
+                        sort_done_msg = Some((moved, skipped, errors));
+                    }
+                    WorkerMsg::Error(e) => {
+                        error_msg = Some(e);
+                    }
+                },
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
                 }
             }
         }
@@ -451,6 +469,14 @@ impl PhotoFixApp {
             self.btn_action.set_text("Scan Folder");
             self.btn_action.set_enabled(true);
             *self.is_running.borrow_mut() = false;
+        } else if disconnected {
+            self.lbl_status.set_text("Error: worker stopped unexpectedly");
+            self.log("ERROR: Worker thread terminated unexpectedly.");
+            self.timer.stop();
+            *self.btn_state.borrow_mut() = AppButtonState::Scan;
+            self.btn_action.set_text("Scan Folder");
+            self.btn_action.set_enabled(true);
+            *self.is_running.borrow_mut() = false;
         }
     }
 }
@@ -476,6 +502,9 @@ pub mod worker {
         while let Some(dir) = dirs.pop() {
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
+                    if entry.file_type().map_or(false, |ft| ft.is_symlink()) {
+                        continue;
+                    }
                     let path = entry.path();
                     if path.is_dir() {
                         dirs.push(path);
@@ -591,13 +620,16 @@ pub mod worker {
                 let date = get_date(img_path);
                 
                 let current = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                let file_name = img_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                if let Ok(lock) = tx_shared.lock() {
-                    let _ = lock.send(WorkerMsg::ScanProgress {
-                        current,
-                        total,
-                        file: file_name,
-                    });
+                // Throttle UI updates: report every 50 files or on the last file
+                if current % 50 == 0 || current == total {
+                    let file_name = img_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    if let Ok(lock) = tx_shared.lock() {
+                        let _ = lock.send(WorkerMsg::ScanProgress {
+                            current,
+                            total,
+                            file: file_name,
+                        });
+                    }
                 }
                 
                 (img_path.clone(), date)

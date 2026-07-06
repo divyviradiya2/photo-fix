@@ -2,6 +2,9 @@
 name = "photo-fix"
 version = "0.1.0"
 edition = "2021"
+description = "A lightweight, high-performance photo sorting utility for Windows"
+license = "MIT"
+readme = "README.md"
 
 [dependencies]
 native-windows-gui = "1.0.12"
