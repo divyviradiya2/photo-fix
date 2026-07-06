@@ -17,19 +17,45 @@ A high-performance Windows XP-style photo sorter desktop utility built in Rust. 
 <!-- GSD:stack-start source:STACK.md -->
 ## Technology Stack
 
-Technology stack not yet documented. Will populate after codebase mapping or first phase.
+- **Language:** Rust (stable-i686-pc-windows-gnu, rustc 1.96.1)
+- **GUI:** native-windows-gui 1.0.12 + native-windows-derive 1.0.3 (pure Win32 API via winapi crate)
+- **EXIF:** kamadak-exif 0.6
+- **Date/Time:** chrono 0.4 (clock + std features only)
+- **Parallelism:** rayon 1.10 (available, not yet used in worker)
+- **Toolchain:** i686-pc-windows-gnu (32-bit MinGW target)
+- **Release binary:** ~457 KB with opt-level="z", LTO, strip, panic=abort
 <!-- GSD:stack-end -->
 
 <!-- GSD:conventions-start source:CONVENTIONS.md -->
 ## Conventions
 
-Conventions not yet established. Will populate as patterns emerge during development.
+- Single `src/main.rs` file with inline `worker` module for sorting logic.
+- `WorkerMsg` enum for typed worker→UI communication.
+- NWG derive macros (`#[derive(NwgUi)]`) for declarative UI control layout.
+- `RefCell` for interior mutability of runtime state in the UI struct.
+- All I/O happens on background threads; UI thread only polls via `AnimationTimer`.
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
 ## Architecture
 
-Architecture not yet mapped. Follow existing patterns found in the codebase.
+```
+main() → nwg::init() → PhotoFixApp::build_ui() → dispatch_thread_events()
+                              │
+                    ┌─────────┴─────────┐
+                    │   PhotoFixApp      │
+                    │  (NwgUi struct)    │
+                    │                   │
+                    │  on_start() ──────┼──→ std::thread::spawn(worker::run_sort)
+                    │                   │         │
+                    │  poll_worker() ←──┼─────────┘ (mpsc channel)
+                    │  (AnimationTimer) │
+                    └───────────────────┘
+```
+
+- **UI thread**: Handles window events, polls `mpsc::Receiver<WorkerMsg>` via 50ms timer.
+- **Worker thread**: Scans directories, reads EXIF, copies/moves files, sends progress via `mpsc::Sender`.
+- **No blocking I/O on UI thread** — all file operations run in the worker.
 <!-- GSD:architecture-end -->
 
 <!-- GSD:workflow-start source:GSD defaults -->

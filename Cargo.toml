@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-fltk = { version = "1.4", features = ["fltk-bundled"] }
+native-windows-gui = "1.0.12"
+native-windows-derive = "1.0.3"
 rayon = "1.10"
-exif = "0.6"
+kamadak-exif = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
