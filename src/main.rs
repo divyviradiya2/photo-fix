@@ -134,14 +134,28 @@ impl PhotoFixApp {
     }
 
     fn log(&self, msg: &str) {
+        self.log_batch(&[msg.to_string()]);
+    }
+
+    fn log_batch(&self, msgs: &[String]) {
         let current = self.txt_log.text();
-        if current.is_empty() {
-            self.txt_log.set_text(msg);
-        } else {
-            self.txt_log.set_text(&format!("{}\r\n{}", current, msg));
+        let mut lines: Vec<&str> = current.split("\r\n").filter(|s| !s.is_empty()).collect();
+        
+        for msg in msgs {
+            lines.push(msg);
         }
+
+        // Keep only the last 300 lines
+        if lines.len() > 300 {
+            let start = lines.len() - 300;
+            lines = lines[start..].to_vec();
+        }
+
+        let new_text = lines.join("\r\n");
+        self.txt_log.set_text(&new_text);
+
         // Scroll to bottom
-        let len = self.txt_log.text().len() as u32;
+        let len = new_text.len() as u32;
         self.txt_log.set_selection(len..len);
     }
 
@@ -207,40 +221,62 @@ impl PhotoFixApp {
             None => return,
         };
 
+        let mut logs = Vec::new();
+        let mut last_progress = None;
+        let mut done_msg = None;
+        let mut error_msg = None;
+
         // Drain all pending messages
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 WorkerMsg::Progress { current, total, file } => {
-                    if total > 0 {
-                        let pct = (current as u32 * 1000) / total as u32;
-                        self.progress.set_pos(pct);
-                    }
-                    self.lbl_status.set_text(&format!(
-                        "Processing {}/{}...",
-                        current, total
-                    ));
-                    self.log(&format!("  {}", file));
+                    logs.push(format!("  {}", file));
+                    last_progress = Some((current, total));
                 }
                 WorkerMsg::Done { moved, skipped, errors } => {
-                    self.progress.set_pos(1000);
-                    let summary = format!(
-                        "Done! Processed: {}, Skipped: {}, Errors: {}",
-                        moved, skipped, errors
-                    );
-                    self.lbl_status.set_text(&summary);
-                    self.log(&format!("---\n{}", summary));
-                    self.timer.stop();
-                    self.btn_start.set_enabled(true);
-                    *self.is_running.borrow_mut() = false;
+                    done_msg = Some((moved, skipped, errors));
                 }
                 WorkerMsg::Error(e) => {
-                    self.lbl_status.set_text("Error!");
-                    self.log(&format!("ERROR: {}", e));
-                    self.timer.stop();
-                    self.btn_start.set_enabled(true);
-                    *self.is_running.borrow_mut() = false;
+                    error_msg = Some(e);
                 }
             }
+        }
+
+        // Apply all accumulated logs in one single batch update
+        if !logs.is_empty() {
+            self.log_batch(&logs);
+        }
+
+        // Update progress bar and label once using the latest values
+        if let Some((current, total)) = last_progress {
+            if total > 0 {
+                let pct = (current as u32 * 1000) / total as u32;
+                self.progress.set_pos(pct);
+            }
+            self.lbl_status.set_text(&format!(
+                "Processing {}/{}...",
+                current, total
+            ));
+        }
+
+        // Handle termination messages at the end
+        if let Some((moved, skipped, errors)) = done_msg {
+            self.progress.set_pos(1000);
+            let summary = format!(
+                "Done! Processed: {}, Skipped: {}, Errors: {}",
+                moved, skipped, errors
+            );
+            self.lbl_status.set_text(&summary);
+            self.log(&format!("---\r\n{}", summary));
+            self.timer.stop();
+            self.btn_start.set_enabled(true);
+            *self.is_running.borrow_mut() = false;
+        } else if let Some(e) = error_msg {
+            self.lbl_status.set_text("Error!");
+            self.log(&format!("ERROR: {}", e));
+            self.timer.stop();
+            self.btn_start.set_enabled(true);
+            *self.is_running.borrow_mut() = false;
         }
     }
 }
