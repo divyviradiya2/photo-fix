@@ -31,6 +31,13 @@ pub enum WorkerMsg {
     Error(String),
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub enum AppButtonState {
+    #[default]
+    Scan,
+    Sort,
+}
+
 #[derive(Default, NwgUi)]
 pub struct PhotoFixApp {
     // ── Main Window ──────────────────────────────────────────────
@@ -75,15 +82,10 @@ pub struct PhotoFixApp {
     #[nwg_control(size: (130, 200), position: (90, 115), collection: vec!["Copy Files", "Move Files"])]
     combo_op: nwg::ComboBox<&'static str>,
 
-    // ── Scan button ──────────────────────────────────────────────
-    #[nwg_control(text: "Scan Folder", size: (96, 28), position: (226, 113))]
-    #[nwg_events(OnButtonClick: [PhotoFixApp::on_scan])]
-    btn_scan: nwg::Button,
-
-    // ── Start button ─────────────────────────────────────────────
-    #[nwg_control(text: "Start Sorting", size: (96, 28), position: (327, 113), enabled: false)]
-    #[nwg_events(OnButtonClick: [PhotoFixApp::on_start])]
-    btn_start: nwg::Button,
+    // ── Action button ────────────────────────────────────────────
+    #[nwg_control(text: "Scan Folder", size: (197, 28), position: (226, 113))]
+    #[nwg_events(OnButtonClick: [PhotoFixApp::on_action_click])]
+    btn_action: nwg::Button,
 
     // ── Structure selector ───────────────────────────────────────
     #[nwg_control(text: "Structure:", size: (70, 18), position: (12, 148))]
@@ -119,6 +121,7 @@ pub struct PhotoFixApp {
     rx: RefCell<Option<mpsc::Receiver<WorkerMsg>>>,
     is_running: RefCell<bool>,
     scan_results: RefCell<Vec<ScanResult>>,
+    btn_state: RefCell<AppButtonState>,
 }
 
 impl PhotoFixApp {
@@ -126,6 +129,8 @@ impl PhotoFixApp {
         // Select first item in combo boxes
         self.combo_op.set_selection(Some(0));
         self.combo_structure.set_selection(Some(0));
+        *self.btn_state.borrow_mut() = AppButtonState::Scan;
+        self.btn_action.set_text("Scan Folder");
     }
 
     fn on_exit(&self) {
@@ -143,6 +148,9 @@ impl PhotoFixApp {
         if dlg.run(Some(&self.window)) {
             if let Ok(path) = dlg.get_selected_item() {
                 self.inp_src.set_text(&path.to_string_lossy());
+                *self.btn_state.borrow_mut() = AppButtonState::Scan;
+                self.btn_action.set_text("Scan Folder");
+                self.btn_action.set_enabled(true);
             }
         }
     }
@@ -158,6 +166,9 @@ impl PhotoFixApp {
         if dlg.run(Some(&self.window)) {
             if let Ok(path) = dlg.get_selected_item() {
                 self.inp_dst.set_text(&path.to_string_lossy());
+                *self.btn_state.borrow_mut() = AppButtonState::Scan;
+                self.btn_action.set_text("Scan Folder");
+                self.btn_action.set_enabled(true);
             }
         }
     }
@@ -186,6 +197,14 @@ impl PhotoFixApp {
         // Scroll to bottom
         let len = new_text.len() as u32;
         self.txt_log.set_selection(len..len);
+    }
+
+    fn on_action_click(&self) {
+        let state = *self.btn_state.borrow();
+        match state {
+            AppButtonState::Scan => self.on_scan(),
+            AppButtonState::Sort => self.on_start(),
+        }
     }
 
     fn on_scan(&self) {
@@ -221,8 +240,7 @@ impl PhotoFixApp {
         let year_only = self.combo_structure.selection() == Some(1);
 
         self.scan_results.borrow_mut().clear();
-        self.btn_scan.set_enabled(false);
-        self.btn_start.set_enabled(false);
+        self.btn_action.set_enabled(false);
         self.progress.set_pos(0);
         self.lbl_status.set_text("Scanning...");
         self.txt_log.set_text("");
@@ -255,8 +273,7 @@ impl PhotoFixApp {
             return;
         }
 
-        self.btn_scan.set_enabled(false);
-        self.btn_start.set_enabled(false);
+        self.btn_action.set_enabled(false);
         self.progress.set_pos(0);
         self.lbl_status.set_text("Sorting...");
         self.txt_log.set_text("");
@@ -380,8 +397,14 @@ impl PhotoFixApp {
             self.log_batch(&scan_logs);
             self.lbl_status.set_text(&summary);
             self.timer.stop();
-            self.btn_scan.set_enabled(true);
-            self.btn_start.set_enabled(pending_copy + pending_move > 0);
+            if pending_copy + pending_move > 0 {
+                *self.btn_state.borrow_mut() = AppButtonState::Sort;
+                self.btn_action.set_text("Start Sorting");
+            } else {
+                *self.btn_state.borrow_mut() = AppButtonState::Scan;
+                self.btn_action.set_text("Scan Folder");
+            }
+            self.btn_action.set_enabled(true);
             *self.scan_results.borrow_mut() = results;
             *self.is_running.borrow_mut() = false;
         } else if let Some((moved, skipped, errors)) = sort_done_msg {
@@ -393,16 +416,18 @@ impl PhotoFixApp {
             self.lbl_status.set_text(&summary);
             self.log(&format!("---\r\n{}", summary));
             self.timer.stop();
-            self.btn_scan.set_enabled(true);
-            self.btn_start.set_enabled(false);
+            *self.btn_state.borrow_mut() = AppButtonState::Scan;
+            self.btn_action.set_text("Scan Folder");
+            self.btn_action.set_enabled(true);
             self.scan_results.borrow_mut().clear();
             *self.is_running.borrow_mut() = false;
         } else if let Some(e) = error_msg {
             self.lbl_status.set_text("Error!");
             self.log(&format!("ERROR: {}", e));
             self.timer.stop();
-            self.btn_scan.set_enabled(true);
-            self.btn_start.set_enabled(false);
+            *self.btn_state.borrow_mut() = AppButtonState::Scan;
+            self.btn_action.set_text("Scan Folder");
+            self.btn_action.set_enabled(true);
             *self.is_running.borrow_mut() = false;
         }
     }
