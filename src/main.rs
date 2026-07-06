@@ -49,7 +49,7 @@ pub struct PhotoFixApp {
 
     // ── Main Window ──────────────────────────────────────────────
     #[nwg_control(
-        size: (538, 310),
+        size: (538, 324),
         position: (300, 200),
         title: "Photo Fix",
         flags: "WINDOW|VISIBLE",
@@ -99,7 +99,10 @@ pub struct PhotoFixApp {
 
     // ── Action button ────────────────────────────────────────────
     #[nwg_control(text: "Scan Folder", size: (154, 28), position: (372, 113))]
-    #[nwg_events(OnButtonClick: [PhotoFixApp::on_action_click])]
+    #[nwg_events(
+        OnButtonClick: [PhotoFixApp::on_action_click],
+        OnButtonDoubleClick: [PhotoFixApp::on_action_click]
+    )]
     btn_action: nwg::Button,
 
     // ── Progress bar ─────────────────────────────────────────────
@@ -107,19 +110,22 @@ pub struct PhotoFixApp {
     progress: nwg::ProgressBar,
 
     // ── Status label ─────────────────────────────────────────────
-    #[nwg_control(text: "Ready", size: (410, 18), position: (12, 176))]
+    #[nwg_control(text: "Ready", size: (410, 18), position: (12, 184))]
     lbl_status: nwg::Label,
 
     // ── Log Toggle Button ────────────────────────────────────────
-    #[nwg_control(text: "Expand Log", size: (94, 24), position: (432, 172))]
-    #[nwg_events(OnButtonClick: [PhotoFixApp::toggle_log_view])]
+    #[nwg_control(text: "Expand Log", size: (94, 24), position: (432, 180))]
+    #[nwg_events(
+        OnButtonClick: [PhotoFixApp::toggle_log_view],
+        OnButtonDoubleClick: [PhotoFixApp::toggle_log_view]
+    )]
     btn_toggle_log: nwg::Button,
 
     // ── Log text box ─────────────────────────────────────────────
     #[nwg_control(
         text: "",
         size: (514, 98),
-        position: (12, 200),
+        position: (12, 214),
         readonly: true,
         flags: "VISIBLE|VSCROLL|AUTOVSCROLL|TAB_STOP"
     )]
@@ -216,12 +222,12 @@ impl PhotoFixApp {
     fn toggle_log_view(&self) {
         let expanded = *self.log_expanded.borrow();
         if expanded {
-            self.window.set_size(538, 310);
+            self.window.set_size(538, 324);
             self.txt_log.set_size(514, 98);
             self.btn_toggle_log.set_text("Expand Log");
             *self.log_expanded.borrow_mut() = false;
         } else {
-            self.window.set_size(538, 550);
+            self.window.set_size(538, 564);
             self.txt_log.set_size(514, 338);
             self.btn_toggle_log.set_text("Collapse Log");
             *self.log_expanded.borrow_mut() = true;
@@ -815,3 +821,5 @@ fn main() {
 
     nwg::dispatch_thread_events();
 }
+f n   t e s t ( h :   & n w g : : C o n t r o l H a n d l e )   {   l e t   _ :   O p t i o n < w i n a p i : : s h a r e d : : w i n d e f : : H W N D >   =   h . h w n d ( ) ;   }  
+ 
