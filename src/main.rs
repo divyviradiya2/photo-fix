@@ -35,7 +35,7 @@ pub enum WorkerMsg {
 pub struct PhotoFixApp {
     // ── Main Window ──────────────────────────────────────────────
     #[nwg_control(
-        size: (440, 310),
+        size: (440, 340),
         position: (300, 200),
         title: "Photo Fix",
         flags: "WINDOW|VISIBLE"
@@ -85,19 +85,26 @@ pub struct PhotoFixApp {
     #[nwg_events(OnButtonClick: [PhotoFixApp::on_start])]
     btn_start: nwg::Button,
 
+    // ── Structure selector ───────────────────────────────────────
+    #[nwg_control(text: "Structure:", size: (70, 18), position: (12, 148))]
+    lbl_structure: nwg::Label,
+
+    #[nwg_control(size: (130, 200), position: (90, 145), collection: vec!["Year/Month", "Year Only"])]
+    combo_structure: nwg::ComboBox<&'static str>,
+
     // ── Progress bar ─────────────────────────────────────────────
-    #[nwg_control(size: (410, 18), position: (12, 152), range: 0..1000)]
+    #[nwg_control(size: (410, 18), position: (12, 182), range: 0..1000)]
     progress: nwg::ProgressBar,
 
     // ── Status label ─────────────────────────────────────────────
-    #[nwg_control(text: "Ready", size: (410, 18), position: (12, 176))]
+    #[nwg_control(text: "Ready", size: (410, 18), position: (12, 206))]
     lbl_status: nwg::Label,
 
     // ── Log text box ─────────────────────────────────────────────
     #[nwg_control(
         text: "",
-        size: (410, 100),
-        position: (12, 200),
+        size: (410, 92),
+        position: (12, 236),
         readonly: true,
         flags: "VISIBLE|VSCROLL|AUTOVSCROLL|TAB_STOP"
     )]
@@ -116,8 +123,9 @@ pub struct PhotoFixApp {
 
 impl PhotoFixApp {
     fn on_init(&self) {
-        // Select first item in combo box
+        // Select first item in combo boxes
         self.combo_op.set_selection(Some(0));
+        self.combo_structure.set_selection(Some(0));
     }
 
     fn on_exit(&self) {
@@ -210,6 +218,7 @@ impl PhotoFixApp {
         }
 
         let use_copy = self.combo_op.selection() == Some(0);
+        let year_only = self.combo_structure.selection() == Some(1);
 
         self.scan_results.borrow_mut().clear();
         self.btn_scan.set_enabled(false);
@@ -227,7 +236,7 @@ impl PhotoFixApp {
         self.timer.start();
 
         std::thread::spawn(move || {
-            crate::worker::run_scan(src_path, dst_path, use_copy, tx);
+            crate::worker::run_scan(src_path, dst_path, use_copy, year_only, tx);
         });
     }
 
@@ -513,6 +522,7 @@ pub mod worker {
         src: PathBuf,
         dst: PathBuf,
         use_copy: bool,
+        year_only: bool,
         tx: mpsc::Sender<WorkerMsg>,
     ) {
         let images = collect_images(&src);
@@ -563,7 +573,11 @@ pub mod worker {
                 }
             };
 
-            let dest_path = dst.join(format!("{}", year)).join(month_name(month)).join(&file_name);
+            let dest_path = if year_only {
+                dst.join(format!("{}", year)).join(&file_name)
+            } else {
+                dst.join(format!("{}", year)).join(month_name(month)).join(&file_name)
+            };
 
             let status = if use_copy {
                 ScanStatus::PendingCopy { year, month, dest_path }
