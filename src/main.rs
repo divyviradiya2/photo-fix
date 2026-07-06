@@ -474,17 +474,10 @@ pub mod worker {
             }
         }
 
-        // Fallback: file creation time first on Windows, then modified time
+        // Fallback: file creation time only on Windows
         if let Ok(meta) = std::fs::metadata(path) {
             if let Ok(created) = meta.created() {
                 let datetime: chrono::DateTime<chrono::Local> = created.into();
-                use chrono::Datelike;
-                if datetime.year() > 1900 && datetime.year() < 2200 {
-                    return Some((datetime.year(), datetime.month()));
-                }
-            }
-            if let Ok(modified) = meta.modified() {
-                let datetime: chrono::DateTime<chrono::Local> = modified.into();
                 use chrono::Datelike;
                 if datetime.year() > 1900 && datetime.year() < 2200 {
                     return Some((datetime.year(), datetime.month()));
