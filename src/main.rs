@@ -7,6 +7,9 @@ use nwg::NativeUi;
 use std::cell::RefCell;
 use std::sync::mpsc;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug)]
 pub enum ScanStatus {
@@ -56,7 +59,6 @@ pub struct PhotoFixApp {
         icon: Some(&data.app_icon)
     )]
     #[nwg_events(
-        OnWindowClose: [PhotoFixApp::on_exit],
         OnInit: [PhotoFixApp::on_init]
     )]
     window: nwg::Window,
@@ -143,6 +145,7 @@ pub struct PhotoFixApp {
     btn_state: RefCell<AppButtonState>,
     log_lines: RefCell<Vec<String>>,
     log_expanded: RefCell<bool>,
+    raw_handler: RefCell<Option<nwg::RawEventHandler>>,
 }
 
 impl PhotoFixApp {
@@ -153,10 +156,28 @@ impl PhotoFixApp {
         *self.btn_state.borrow_mut() = AppButtonState::Scan;
         self.btn_action.set_text("Scan Folder");
         *self.log_expanded.borrow_mut() = false;
-    }
 
-    fn on_exit(&self) {
-        nwg::stop_thread_dispatch();
+        // Bind raw event handler to window to intercept WM_CLOSE (0x0010)
+        let handler = nwg::bind_raw_event_handler(&self.window.handle, 0x10001, |_, msg, _, _| {
+            if msg == 0x0010 { // WM_CLOSE
+                if IS_RUNNING.load(Ordering::SeqCst) {
+                    let params = nwg::MessageParams {
+                        title: "Photo Fix",
+                        content: "An operation is currently in progress. Exiting now may leave partially processed files or corrupt destination images.\n\nAre you sure you want to exit?",
+                        buttons: nwg::MessageButtons::YesNo,
+                        icons: nwg::MessageIcons::Warning,
+                    };
+                    if nwg::message(&params) == nwg::MessageChoice::No {
+                        return Some(0); // Intercept and cancel closing
+                    }
+                }
+                nwg::stop_thread_dispatch();
+                return None; // Proceed to destroy window
+            }
+            None
+        }).expect("Failed to bind raw event handler");
+
+        *self.raw_handler.borrow_mut() = Some(handler);
     }
 
     fn browse_source(&self) {
@@ -271,7 +292,22 @@ impl PhotoFixApp {
             return;
         }
 
-        if src_path == dst_path || dst_path.starts_with(&src_path) {
+        // Canonicalize paths to resolve relative segments, case discrepancies, and UNC formatting
+        let canonical_src = std::fs::canonicalize(&src_path).unwrap_or_else(|_| src_path.clone());
+        let canonical_dst = std::fs::canonicalize(&dst_path).unwrap_or_else(|_| dst_path.clone());
+
+        // Perform a case-insensitive nesting check for Windows compatibility
+        let src_lower = canonical_src.to_string_lossy().to_lowercase();
+        let dst_lower = canonical_dst.to_string_lossy().to_lowercase();
+
+        let has_separator = src_lower.ends_with('\\') || src_lower.ends_with('/');
+        let src_prefix = if has_separator {
+            src_lower.clone()
+        } else {
+            format!("{}\\", src_lower)
+        };
+
+        if src_lower == dst_lower || dst_lower.starts_with(&src_prefix) {
             nwg::modal_info_message(
                 &self.window,
                 "Photo Fix",
@@ -284,6 +320,10 @@ impl PhotoFixApp {
         let year_only = self.combo_structure.selection() == Some(1);
 
         self.scan_results.borrow_mut().clear();
+        self.btn_src.set_enabled(false);
+        self.btn_dst.set_enabled(false);
+        self.combo_op.set_enabled(false);
+        self.combo_structure.set_enabled(false);
         self.btn_action.set_enabled(false);
         self.progress.set_pos(0);
         self.lbl_status.set_text("Scanning...");
@@ -318,6 +358,10 @@ impl PhotoFixApp {
             return;
         }
 
+        self.btn_src.set_enabled(false);
+        self.btn_dst.set_enabled(false);
+        self.combo_op.set_enabled(false);
+        self.combo_structure.set_enabled(false);
         self.btn_action.set_enabled(false);
         self.progress.set_pos(0);
         self.lbl_status.set_text("Sorting...");
@@ -459,6 +503,10 @@ impl PhotoFixApp {
                 self.btn_action.set_text("Scan Folder");
             }
             self.btn_action.set_enabled(true);
+            self.btn_src.set_enabled(true);
+            self.btn_dst.set_enabled(true);
+            self.combo_op.set_enabled(true);
+            self.combo_structure.set_enabled(true);
             *self.scan_results.borrow_mut() = results;
             *self.is_running.borrow_mut() = false;
         } else if let Some((moved, skipped, errors)) = sort_done_msg {
@@ -473,6 +521,10 @@ impl PhotoFixApp {
             *self.btn_state.borrow_mut() = AppButtonState::Scan;
             self.btn_action.set_text("Scan Folder");
             self.btn_action.set_enabled(true);
+            self.btn_src.set_enabled(true);
+            self.btn_dst.set_enabled(true);
+            self.combo_op.set_enabled(true);
+            self.combo_structure.set_enabled(true);
             self.scan_results.borrow_mut().clear();
             *self.is_running.borrow_mut() = false;
         } else if let Some(e) = error_msg {
@@ -482,6 +534,10 @@ impl PhotoFixApp {
             *self.btn_state.borrow_mut() = AppButtonState::Scan;
             self.btn_action.set_text("Scan Folder");
             self.btn_action.set_enabled(true);
+            self.btn_src.set_enabled(true);
+            self.btn_dst.set_enabled(true);
+            self.combo_op.set_enabled(true);
+            self.combo_structure.set_enabled(true);
             *self.is_running.borrow_mut() = false;
         } else if disconnected {
             self.lbl_status.set_text("Error: worker stopped unexpectedly");
@@ -490,6 +546,10 @@ impl PhotoFixApp {
             *self.btn_state.borrow_mut() = AppButtonState::Scan;
             self.btn_action.set_text("Scan Folder");
             self.btn_action.set_enabled(true);
+            self.btn_src.set_enabled(true);
+            self.btn_dst.set_enabled(true);
+            self.combo_op.set_enabled(true);
+            self.combo_structure.set_enabled(true);
             *self.is_running.borrow_mut() = false;
         }
     }
@@ -500,7 +560,7 @@ pub mod worker {
     use super::WorkerMsg;
     use super::ScanResult;
     use super::ScanStatus;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc;
 
     const IMAGE_EXTENSIONS: &[&str] = &[
@@ -509,14 +569,14 @@ pub mod worker {
     ];
 
     /// Collect all image files from `src` recursively.
-    fn collect_images(src: &PathBuf) -> Vec<PathBuf> {
+    fn collect_images(src: &Path) -> Vec<PathBuf> {
         let mut images = Vec::new();
-        let mut dirs = vec![src.clone()];
+        let mut dirs = vec![src.to_path_buf()];
 
         while let Some(dir) = dirs.pop() {
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
-                    if entry.file_type().map_or(false, |ft| ft.is_symlink()) {
+                    if entry.file_type().is_ok_and(|ft| ft.is_symlink()) {
                         continue;
                     }
                     let path = entry.path();
@@ -534,11 +594,13 @@ pub mod worker {
         images
     }
 
-    fn parse_exif_date(s: &str) -> Option<(i32, u32)> {
-        let parts: Vec<&str> = s.split(|c| c == ':' || c == ' ' || c == '-').collect();
+    pub(crate) fn parse_exif_date(s: &str) -> Option<(i32, u32)> {
+        let parts: Vec<&str> = s.split([':', ' ', '-', '/']).collect();
         if parts.len() >= 2 {
-            if let (Ok(year), Ok(month)) = (parts[0].parse::<i32>(), parts[1].parse::<u32>()) {
-                if year > 1900 && year < 2200 && month >= 1 && month <= 12 {
+            let year_str = parts[0].trim().trim_matches('\0');
+            let month_str = parts[1].trim().trim_matches('\0');
+            if let (Ok(year), Ok(month)) = (year_str.parse::<i32>(), month_str.parse::<u32>()) {
+                if (1901..2200).contains(&year) && (1..=12).contains(&month) {
                     return Some((year, month));
                 }
             }
@@ -546,8 +608,11 @@ pub mod worker {
         None
     }
 
-    /// Extract capture/born date strictly from EXIF metadata.
-    fn get_date(path: &PathBuf) -> Option<(i32, u32)> {
+    /// Extract capture/born date strictly from EXIF metadata, falling back to filesystem timestamps.
+    fn get_date(path: &Path) -> Option<(i32, u32)> {
+        use chrono::Datelike;
+
+        // Try EXIF first
         if let Ok(file) = std::fs::File::open(path) {
             let mut buf_reader = std::io::BufReader::new(&file);
             if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf_reader) {
@@ -586,6 +651,19 @@ pub mod worker {
                 }
             }
         }
+
+        // Fall back to filesystem metadata modified or created times
+        if let Ok(metadata) = std::fs::metadata(path) {
+            if let Ok(system_time) = metadata.modified().or_else(|_| metadata.created()) {
+                let datetime: chrono::DateTime<chrono::Local> = system_time.into();
+                let year = datetime.year();
+                let month = datetime.month();
+                if (1901..2200).contains(&year) && (1..=12).contains(&month) {
+                    return Some((year, month));
+                }
+            }
+        }
+
         None
     }
 
@@ -635,7 +713,7 @@ pub mod worker {
                 
                 let current = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 // Throttle UI updates: report every 50 files or on the last file
-                if current % 50 == 0 || current == total {
+                if current.is_multiple_of(50) || current == total {
                     let file_name = img_path.file_name().unwrap_or_default().to_string_lossy().to_string();
                     if let Ok(lock) = tx_shared.lock() {
                         let _ = lock.send(WorkerMsg::ScanProgress {
@@ -687,6 +765,25 @@ pub mod worker {
         let _ = tx.send(WorkerMsg::ScanDone(results));
     }
 
+    fn generate_unique_dest_path(dest_path: &Path) -> PathBuf {
+        if !dest_path.exists() {
+            return dest_path.to_path_buf();
+        }
+
+        let parent = dest_path.parent().unwrap_or(dest_path);
+        let stem = dest_path.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = dest_path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+
+        let mut counter = 1;
+        loop {
+            let candidate = parent.join(format!("{}_{}{}", stem, counter, ext));
+            if !candidate.exists() {
+                return candidate;
+            }
+            counter += 1;
+        }
+    }
+
     pub fn run_sort(
         results: Vec<ScanResult>,
         tx: mpsc::Sender<WorkerMsg>,
@@ -701,17 +798,10 @@ pub mod worker {
 
             match res.status {
                 ScanStatus::PendingCopy { year, month, dest_path } => {
-                    if dest_path.exists() {
-                        skipped += 1;
-                        let _ = tx.send(WorkerMsg::SortProgress {
-                            current: i + 1,
-                            total,
-                            file: format!("[exists] {}", file_name),
-                        });
-                        continue;
-                    }
+                    let final_dest = generate_unique_dest_path(&dest_path);
+                    let final_file_name = final_dest.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-                    if let Some(parent) = dest_path.parent() {
+                    if let Some(parent) = final_dest.parent() {
                         if let Err(e) = std::fs::create_dir_all(parent) {
                             errors += 1;
                             let _ = tx.send(WorkerMsg::SortProgress {
@@ -723,13 +813,18 @@ pub mod worker {
                         }
                     }
 
-                    match std::fs::copy(&res.src, &dest_path) {
+                    match std::fs::copy(&res.src, &final_dest) {
                         Ok(_) => {
                             moved += 1;
+                            let log_msg = if final_file_name != file_name {
+                                format!("Copied: {} -> {}/{} (renamed to {})", file_name, year, month_name(month), final_file_name)
+                            } else {
+                                format!("Copied: {} -> {}/{}", file_name, year, month_name(month))
+                            };
                             let _ = tx.send(WorkerMsg::SortProgress {
                                 current: i + 1,
                                 total,
-                                file: format!("Copied: {} -> {}/{}", file_name, year, month_name(month)),
+                                file: log_msg,
                             });
                         }
                         Err(e) => {
@@ -743,17 +838,10 @@ pub mod worker {
                     }
                 }
                 ScanStatus::PendingMove { year, month, dest_path } => {
-                    if dest_path.exists() {
-                        skipped += 1;
-                        let _ = tx.send(WorkerMsg::SortProgress {
-                            current: i + 1,
-                            total,
-                            file: format!("[exists] {}", file_name),
-                        });
-                        continue;
-                    }
+                    let final_dest = generate_unique_dest_path(&dest_path);
+                    let final_file_name = final_dest.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-                    if let Some(parent) = dest_path.parent() {
+                    if let Some(parent) = final_dest.parent() {
                         if let Err(e) = std::fs::create_dir_all(parent) {
                             errors += 1;
                             let _ = tx.send(WorkerMsg::SortProgress {
@@ -765,18 +853,23 @@ pub mod worker {
                         }
                     }
 
-                    let result = std::fs::rename(&res.src, &dest_path).or_else(|_| {
-                        std::fs::copy(&res.src, &dest_path)?;
+                    let result = std::fs::rename(&res.src, &final_dest).or_else(|_| {
+                        std::fs::copy(&res.src, &final_dest)?;
                         std::fs::remove_file(&res.src)
                     });
 
                     match result {
                         Ok(_) => {
                             moved += 1;
+                            let log_msg = if final_file_name != file_name {
+                                format!("Moved: {} -> {}/{} (renamed to {})", file_name, year, month_name(month), final_file_name)
+                            } else {
+                                format!("Moved: {} -> {}/{}", file_name, year, month_name(month))
+                            };
                             let _ = tx.send(WorkerMsg::SortProgress {
                                 current: i + 1,
                                 total,
-                                file: format!("Moved: {} -> {}/{}", file_name, year, month_name(month)),
+                                file: log_msg,
                             });
                         }
                         Err(e) => {
@@ -805,6 +898,23 @@ pub mod worker {
 }
 
 fn main() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            *s
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.as_str()
+        } else {
+            "An unknown panic occurred."
+        };
+        let loc = if let Some(location) = panic_info.location() {
+            format!(" at {}:{}", location.file(), location.line())
+        } else {
+            "".to_string()
+        };
+        let detail = format!("Application panicked: {}{}\n\nPlease report this issue.", msg, loc);
+        native_windows_gui::error_message("Photo Fix Panic", &detail);
+    }));
+
     nwg::init().expect("Failed to initialize Native Windows GUI");
 
     // Set the classic Windows system font globally
@@ -821,5 +931,37 @@ fn main() {
 
     nwg::dispatch_thread_events();
 }
-f n   t e s t ( h :   & n w g : : C o n t r o l H a n d l e )   {   l e t   _ :   O p t i o n < w i n a p i : : s h a r e d : : w i n d e f : : H W N D >   =   h . h w n d ( ) ;   }  
- 
+
+#[cfg(test)]
+mod tests {
+    use super::worker::{parse_exif_date, month_name};
+
+    #[test]
+    fn test_parse_exif_date_colons() {
+        assert_eq!(parse_exif_date("2024:05:12 12:34:56"), Some((2024, 5)));
+    }
+
+    #[test]
+    fn test_parse_exif_date_dashes() {
+        assert_eq!(parse_exif_date("2024-08-20 10:11:12"), Some((2024, 8)));
+    }
+
+    #[test]
+    fn test_parse_exif_date_slashes() {
+        assert_eq!(parse_exif_date("2024/11/05 08:00:00"), Some((2024, 11)));
+    }
+
+    #[test]
+    fn test_parse_exif_date_invalid() {
+        assert_eq!(parse_exif_date("invalid-date"), None);
+        assert_eq!(parse_exif_date("1899:01:01"), None);
+        assert_eq!(parse_exif_date("2024:13:01"), None);
+    }
+
+    #[test]
+    fn test_month_name() {
+        assert_eq!(month_name(1), "Jan");
+        assert_eq!(month_name(12), "Dec");
+        assert_eq!(month_name(13), "Unknown");
+    }
+}
