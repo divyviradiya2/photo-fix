@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    branches: [ master ]
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get Version
+        id: get_version
+        shell: bash
+        run: |
+          VERSION=$(grep -m 1 '^version =' Cargo.toml | cut -d '"' -f 2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if tag exists
+        id: check_tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.get_version.outputs.tag }}"
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists. Skipping build."
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release $TAG_NAME does not exist. Proceeding."
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Rust (stable-i686-pc-windows-gnu)
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-i686-pc-windows-gnu
+
+      - name: Build Release
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          cargo build --release
+
+      - name: Create Release and Upload Asset
+        if: steps.check_tag.outputs.exists == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.get_version.outputs.tag }}"
+          EXE_PATH="target/release/photo-fix.exe"
+          
+          echo "Creating GitHub release for $TAG_NAME..."
+          gh release create "$TAG_NAME" \
+            "$EXE_PATH" \
+            --title "$TAG_NAME" \
+            --notes "Automated production release for version ${{ steps.get_version.outputs.version }}."
