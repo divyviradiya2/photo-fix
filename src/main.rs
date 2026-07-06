@@ -99,8 +99,13 @@ pub struct PhotoFixApp {
     progress: nwg::ProgressBar,
 
     // ── Status label ─────────────────────────────────────────────
-    #[nwg_control(text: "Ready", size: (514, 18), position: (12, 176))]
+    #[nwg_control(text: "Ready", size: (410, 18), position: (12, 176))]
     lbl_status: nwg::Label,
+
+    // ── Log Toggle Button ────────────────────────────────────────
+    #[nwg_control(text: "Expand Log", size: (94, 24), position: (432, 172))]
+    #[nwg_events(OnButtonClick: [PhotoFixApp::toggle_log_view])]
+    btn_toggle_log: nwg::Button,
 
     // ── Log text box ─────────────────────────────────────────────
     #[nwg_control(
@@ -122,6 +127,7 @@ pub struct PhotoFixApp {
     is_running: RefCell<bool>,
     scan_results: RefCell<Vec<ScanResult>>,
     btn_state: RefCell<AppButtonState>,
+    log_expanded: RefCell<bool>,
 }
 
 impl PhotoFixApp {
@@ -131,6 +137,7 @@ impl PhotoFixApp {
         self.combo_structure.set_selection(Some(0));
         *self.btn_state.borrow_mut() = AppButtonState::Scan;
         self.btn_action.set_text("Scan Folder");
+        *self.log_expanded.borrow_mut() = false;
     }
 
     fn on_exit(&self) {
@@ -197,6 +204,21 @@ impl PhotoFixApp {
         // Scroll to bottom
         let len = new_text.len() as u32;
         self.txt_log.set_selection(len..len);
+    }
+
+    fn toggle_log_view(&self) {
+        let expanded = *self.log_expanded.borrow();
+        if expanded {
+            self.window.set_size(538, 310);
+            self.txt_log.set_size(514, 98);
+            self.btn_toggle_log.set_text("Expand Log");
+            *self.log_expanded.borrow_mut() = false;
+        } else {
+            self.window.set_size(538, 550);
+            self.txt_log.set_size(514, 338);
+            self.btn_toggle_log.set_text("Collapse Log");
+            *self.log_expanded.borrow_mut() = true;
+        }
     }
 
     fn on_action_click(&self) {
