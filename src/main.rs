@@ -42,7 +42,7 @@ pub enum AppButtonState {
 pub struct PhotoFixApp {
     // ── Main Window ──────────────────────────────────────────────
     #[nwg_control(
-        size: (440, 340),
+        size: (538, 310),
         position: (300, 200),
         title: "Photo Fix",
         flags: "WINDOW|VISIBLE"
@@ -54,59 +54,59 @@ pub struct PhotoFixApp {
     window: nwg::Window,
 
     // ── Source Directory ─────────────────────────────────────────
-    #[nwg_control(text: "Source Directory:", size: (410, 18), position: (12, 10))]
+    #[nwg_control(text: "Source Directory:", size: (514, 18), position: (12, 10))]
     lbl_src: nwg::Label,
 
-    #[nwg_control(text: "", size: (310, 22), position: (12, 30), readonly: true)]
+    #[nwg_control(text: "", size: (419, 22), position: (12, 30), readonly: true)]
     inp_src: nwg::TextInput,
 
-    #[nwg_control(text: "Browse...", size: (85, 24), position: (332, 29))]
+    #[nwg_control(text: "Browse...", size: (85, 24), position: (441, 29))]
     #[nwg_events(OnButtonClick: [PhotoFixApp::browse_source])]
     btn_src: nwg::Button,
 
     // ── Destination Directory ────────────────────────────────────
-    #[nwg_control(text: "Destination Directory:", size: (410, 18), position: (12, 62))]
+    #[nwg_control(text: "Destination Directory:", size: (514, 18), position: (12, 62))]
     lbl_dst: nwg::Label,
 
-    #[nwg_control(text: "", size: (310, 22), position: (12, 82), readonly: true)]
+    #[nwg_control(text: "", size: (419, 22), position: (12, 82), readonly: true)]
     inp_dst: nwg::TextInput,
 
-    #[nwg_control(text: "Browse...", size: (85, 24), position: (332, 81))]
+    #[nwg_control(text: "Browse...", size: (85, 24), position: (441, 81))]
     #[nwg_events(OnButtonClick: [PhotoFixApp::browse_dest])]
     btn_dst: nwg::Button,
 
     // ── Operation selector ───────────────────────────────────────
-    #[nwg_control(text: "Operation:", size: (70, 18), position: (12, 118))]
+    #[nwg_control(text: "Operation:", size: (65, 18), position: (12, 118))]
     lbl_op: nwg::Label,
 
-    #[nwg_control(size: (130, 200), position: (90, 115), collection: vec!["Copy Files", "Move Files"])]
+    #[nwg_control(size: (95, 200), position: (82, 115), collection: vec!["Copy Files", "Move Files"])]
     combo_op: nwg::ComboBox<&'static str>,
 
+    // ── Structure selector ───────────────────────────────────────
+    #[nwg_control(text: "Structure:", size: (65, 18), position: (192, 118))]
+    lbl_structure: nwg::Label,
+
+    #[nwg_control(size: (95, 200), position: (262, 115), collection: vec!["Year/Month", "Year Only"])]
+    combo_structure: nwg::ComboBox<&'static str>,
+
     // ── Action button ────────────────────────────────────────────
-    #[nwg_control(text: "Scan Folder", size: (197, 28), position: (226, 113))]
+    #[nwg_control(text: "Scan Folder", size: (154, 28), position: (372, 113))]
     #[nwg_events(OnButtonClick: [PhotoFixApp::on_action_click])]
     btn_action: nwg::Button,
 
-    // ── Structure selector ───────────────────────────────────────
-    #[nwg_control(text: "Structure:", size: (70, 18), position: (12, 148))]
-    lbl_structure: nwg::Label,
-
-    #[nwg_control(size: (130, 200), position: (90, 145), collection: vec!["Year/Month", "Year Only"])]
-    combo_structure: nwg::ComboBox<&'static str>,
-
     // ── Progress bar ─────────────────────────────────────────────
-    #[nwg_control(size: (410, 18), position: (12, 182), range: 0..1000)]
+    #[nwg_control(size: (514, 18), position: (12, 152), range: 0..1000)]
     progress: nwg::ProgressBar,
 
     // ── Status label ─────────────────────────────────────────────
-    #[nwg_control(text: "Ready", size: (410, 18), position: (12, 206))]
+    #[nwg_control(text: "Ready", size: (514, 18), position: (12, 176))]
     lbl_status: nwg::Label,
 
     // ── Log text box ─────────────────────────────────────────────
     #[nwg_control(
         text: "",
-        size: (410, 92),
-        position: (12, 236),
+        size: (514, 98),
+        position: (12, 200),
         readonly: true,
         flags: "VISIBLE|VSCROLL|AUTOVSCROLL|TAB_STOP"
     )]
