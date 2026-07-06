@@ -530,10 +530,24 @@ pub mod worker {
 
         // Parallel CPU parsing via Rayon
         use rayon::prelude::*;
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tx_shared = std::sync::Arc::new(std::sync::Mutex::new(tx.clone()));
+
         let processed: Vec<(PathBuf, Option<(i32, u32)>)> = images
             .par_iter()
             .map(|img_path| {
                 let date = get_date(img_path);
+                
+                let current = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let file_name = img_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if let Ok(lock) = tx_shared.lock() {
+                    let _ = lock.send(WorkerMsg::ScanProgress {
+                        current,
+                        total,
+                        file: file_name,
+                    });
+                }
+                
                 (img_path.clone(), date)
             })
             .collect();
@@ -542,7 +556,7 @@ pub mod worker {
         let mut occupied = std::collections::HashMap::<PathBuf, u64>::new();
         let mut results = Vec::new();
 
-        for (i, (img_path, date)) in processed.into_iter().enumerate() {
+        for (img_path, date) in processed {
             let file_name = img_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
             let (year, month) = match date {
@@ -551,11 +565,6 @@ pub mod worker {
                     results.push(ScanResult {
                         src: img_path,
                         status: ScanStatus::NoDateSkipped,
-                    });
-                    let _ = tx.send(WorkerMsg::ScanProgress {
-                        current: i + 1,
-                        total,
-                        file: format!("[skip-no-date] {}", file_name),
                     });
                     continue;
                 }
@@ -578,11 +587,6 @@ pub mod worker {
                     results.push(ScanResult {
                         src: img_path.clone(),
                         status: ScanStatus::DuplicateSkipped,
-                    });
-                    let _ = tx.send(WorkerMsg::ScanProgress {
-                        current: i + 1,
-                        total,
-                        file: format!("[skip-dup] {}", file_name),
                     });
                     continue;
                 }
@@ -614,11 +618,6 @@ pub mod worker {
                                 src: img_path.clone(),
                                 status: ScanStatus::DuplicateSkipped,
                             });
-                            let _ = tx.send(WorkerMsg::ScanProgress {
-                                current: i + 1,
-                                total,
-                                file: format!("[skip-dup] {}", new_name),
-                            });
                             resolved = false;
                             break;
                         }
@@ -647,12 +646,6 @@ pub mod worker {
             results.push(ScanResult {
                 src: img_path,
                 status,
-            });
-
-            let _ = tx.send(WorkerMsg::ScanProgress {
-                current: i + 1,
-                total,
-                file: format!("{}", file_name),
             });
         }
 
