@@ -447,53 +447,8 @@ pub mod worker {
         None
     }
 
-    fn parse_date_from_filename(filename: &str) -> Option<(i32, u32)> {
-        let chars: Vec<char> = filename.chars().collect();
-        // 1. Scan for YYYY-MM-DD or YYYY_MM_DD patterns (10 chars)
-        if chars.len() >= 10 {
-            for i in 0..=chars.len() - 10 {
-                let win = &chars[i..i+10];
-                if win[0].is_ascii_digit() && win[1].is_ascii_digit() && win[2].is_ascii_digit() && win[3].is_ascii_digit()
-                    && (win[4] == '-' || win[4] == '_')
-                    && win[5].is_ascii_digit() && win[6].is_ascii_digit()
-                    && (win[7] == '-' || win[7] == '_')
-                    && win[8].is_ascii_digit() && win[9].is_ascii_digit()
-                {
-                    let year_str: String = win[0..4].iter().collect();
-                    let month_str: String = win[5..7].iter().collect();
-                    let day_str: String = win[8..10].iter().collect();
-                    if let (Ok(year), Ok(month), Ok(day)) = (year_str.parse::<i32>(), month_str.parse::<u32>(), day_str.parse::<u32>()) {
-                        if year > 1900 && year < 2200 && month >= 1 && month <= 12 && day >= 1 && day <= 31 {
-                            return Some((year, month));
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Scan for YYYYMMDD patterns (8 consecutive digits)
-        if chars.len() >= 8 {
-            for i in 0..=chars.len() - 8 {
-                let win = &chars[i..i+8];
-                if win.iter().all(|c| c.is_ascii_digit()) {
-                    let year_str: String = win[0..4].iter().collect();
-                    let month_str: String = win[4..6].iter().collect();
-                    let day_str: String = win[6..8].iter().collect();
-                    if let (Ok(year), Ok(month), Ok(day)) = (year_str.parse::<i32>(), month_str.parse::<u32>(), day_str.parse::<u32>()) {
-                        if year > 1900 && year < 2200 && month >= 1 && month <= 12 && day >= 1 && day <= 31 {
-                            return Some((year, month));
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Extract capture/born date strictly from EXIF metadata or filename fallback.
+    /// Extract capture/born date strictly from EXIF metadata.
     fn get_date(path: &PathBuf) -> Option<(i32, u32)> {
-        // 1. Try EXIF
         if let Ok(file) = std::fs::File::open(path) {
             let mut buf_reader = std::io::BufReader::new(&file);
             if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf_reader) {
@@ -532,15 +487,6 @@ pub mod worker {
                 }
             }
         }
-
-        // 2. Fallback: Parse date from filename (for screenshots)
-        if let Some(file_name) = path.file_name() {
-            let name_str = file_name.to_string_lossy();
-            if let Some(date) = parse_date_from_filename(&name_str) {
-                return Some(date);
-            }
-        }
-
         None
     }
 
