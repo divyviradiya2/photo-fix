@@ -8,11 +8,28 @@ use std::cell::RefCell;
 use std::sync::mpsc;
 use std::path::PathBuf;
 
+#[derive(Clone, Debug)]
+pub enum ScanStatus {
+    PendingCopy { year: i32, month: u32, dest_path: PathBuf },
+    PendingMove { year: i32, month: u32, dest_path: PathBuf },
+    DuplicateSkipped,
+    NoDateSkipped,
+    Error(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct ScanResult {
+    pub src: PathBuf,
+    pub status: ScanStatus,
+}
+
 /// Messages sent from the worker thread back to the UI
 #[derive(Debug)]
 pub enum WorkerMsg {
-    Progress { current: usize, total: usize, file: String },
-    Done { moved: usize, skipped: usize, errors: usize },
+    ScanProgress { current: usize, total: usize, file: String },
+    ScanDone(Vec<ScanResult>),
+    SortProgress { current: usize, total: usize, file: String },
+    SortDone { moved: usize, skipped: usize, errors: usize },
     Error(String),
 }
 
@@ -60,8 +77,13 @@ pub struct PhotoFixApp {
     #[nwg_control(size: (130, 200), position: (90, 115), collection: vec!["Copy Files", "Move Files"])]
     combo_op: nwg::ComboBox<&'static str>,
 
+    // ── Scan button ──────────────────────────────────────────────
+    #[nwg_control(text: "Scan Folder", size: (96, 28), position: (226, 113))]
+    #[nwg_events(OnButtonClick: [PhotoFixApp::on_scan])]
+    btn_scan: nwg::Button,
+
     // ── Start button ─────────────────────────────────────────────
-    #[nwg_control(text: "Start Sorting", size: (130, 28), position: (290, 113))]
+    #[nwg_control(text: "Start Sorting", size: (96, 28), position: (327, 113), enabled: false)]
     #[nwg_events(OnButtonClick: [PhotoFixApp::on_start])]
     btn_start: nwg::Button,
 
@@ -91,6 +113,7 @@ pub struct PhotoFixApp {
     // ── Runtime state (not UI controls) ──────────────────────────
     rx: RefCell<Option<mpsc::Receiver<WorkerMsg>>>,
     is_running: RefCell<bool>,
+    scan_results: RefCell<Vec<ScanResult>>,
 }
 
 impl PhotoFixApp {
@@ -159,7 +182,7 @@ impl PhotoFixApp {
         self.txt_log.set_selection(len..len);
     }
 
-    fn on_start(&self) {
+    fn on_scan(&self) {
         if *self.is_running.borrow() {
             return;
         }
@@ -190,27 +213,57 @@ impl PhotoFixApp {
 
         let use_copy = self.combo_op.selection() == Some(0);
 
-        // Create channel for worker → UI communication
-        let (tx, rx) = mpsc::channel::<WorkerMsg>();
-        *self.rx.borrow_mut() = Some(rx);
-        *self.is_running.borrow_mut() = true;
-
-        // Update UI state
+        self.scan_results.borrow_mut().clear();
+        self.btn_scan.set_enabled(false);
         self.btn_start.set_enabled(false);
         self.progress.set_pos(0);
         self.lbl_status.set_text("Scanning...");
         self.txt_log.set_text("");
-        self.log(&format!("Source: {}", src));
-        self.log(&format!("Destination: {}", dst));
-        self.log(&format!("Operation: {}", if use_copy { "Copy" } else { "Move" }));
+        self.log(&format!("Scanning Source: {}", src));
         self.log("---");
 
-        // Start the timer to poll worker messages
+        let (tx, rx) = mpsc::channel::<WorkerMsg>();
+        *self.rx.borrow_mut() = Some(rx);
+        *self.is_running.borrow_mut() = true;
+
         self.timer.start();
 
-        // Spawn worker thread
         std::thread::spawn(move || {
-            crate::worker::run_sort(src_path, dst_path, use_copy, tx);
+            crate::worker::run_scan(src_path, dst_path, use_copy, tx);
+        });
+    }
+
+    fn on_start(&self) {
+        if *self.is_running.borrow() {
+            return;
+        }
+
+        let results = self.scan_results.borrow().clone();
+        if results.is_empty() {
+            nwg::modal_info_message(
+                &self.window,
+                "Photo Fix",
+                "No scanned results found. Please run Scan Folder first.",
+            );
+            return;
+        }
+
+        self.btn_scan.set_enabled(false);
+        self.btn_start.set_enabled(false);
+        self.progress.set_pos(0);
+        self.lbl_status.set_text("Sorting...");
+        self.txt_log.set_text("");
+        self.log("Starting Sorting Execution...");
+        self.log("---");
+
+        let (tx, rx) = mpsc::channel::<WorkerMsg>();
+        *self.rx.borrow_mut() = Some(rx);
+        *self.is_running.borrow_mut() = true;
+
+        self.timer.start();
+
+        std::thread::spawn(move || {
+            crate::worker::run_sort(results, tx);
         });
     }
 
@@ -222,19 +275,28 @@ impl PhotoFixApp {
         };
 
         let mut logs = Vec::new();
-        let mut last_progress = None;
-        let mut done_msg = None;
+        let mut last_scan_progress = None;
+        let mut last_sort_progress = None;
+        let mut scan_done_msg = None;
+        let mut sort_done_msg = None;
         let mut error_msg = None;
 
         // Drain all pending messages
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                WorkerMsg::Progress { current, total, file } => {
-                    logs.push(format!("  {}", file));
-                    last_progress = Some((current, total));
+                WorkerMsg::ScanProgress { current, total, file } => {
+                    logs.push(format!("Scanned: {}", file));
+                    last_scan_progress = Some((current, total));
                 }
-                WorkerMsg::Done { moved, skipped, errors } => {
-                    done_msg = Some((moved, skipped, errors));
+                WorkerMsg::ScanDone(results) => {
+                    scan_done_msg = Some(results);
+                }
+                WorkerMsg::SortProgress { current, total, file } => {
+                    logs.push(file);
+                    last_sort_progress = Some((current, total));
+                }
+                WorkerMsg::SortDone { moved, skipped, errors } => {
+                    sort_done_msg = Some((moved, skipped, errors));
                 }
                 WorkerMsg::Error(e) => {
                     error_msg = Some(e);
@@ -248,34 +310,102 @@ impl PhotoFixApp {
         }
 
         // Update progress bar and label once using the latest values
-        if let Some((current, total)) = last_progress {
+        if let Some((current, total)) = last_scan_progress {
             if total > 0 {
                 let pct = (current as u32 * 1000) / total as u32;
                 self.progress.set_pos(pct);
             }
             self.lbl_status.set_text(&format!(
-                "Processing {}/{}...",
+                "Scanning {}/{}...",
+                current, total
+            ));
+        }
+
+        if let Some((current, total)) = last_sort_progress {
+            if total > 0 {
+                let pct = (current as u32 * 1000) / total as u32;
+                self.progress.set_pos(pct);
+            }
+            self.lbl_status.set_text(&format!(
+                "Sorting {}/{}...",
                 current, total
             ));
         }
 
         // Handle termination messages at the end
-        if let Some((moved, skipped, errors)) = done_msg {
+        if let Some(results) = scan_done_msg {
+            self.progress.set_pos(1000);
+            
+            // Print complete plan preview logs
+            let mut scan_logs = Vec::new();
+            scan_logs.push("--- Scan Complete. Planned Actions: ---".to_string());
+            
+            let total_count = results.len();
+            let mut pending_copy = 0;
+            let mut pending_move = 0;
+            let mut duplicate = 0;
+            let mut nodate = 0;
+            let mut error = 0;
+
+            for res in &results {
+                let file_name = res.src.file_name().unwrap_or_default().to_string_lossy();
+                match &res.status {
+                    ScanStatus::PendingCopy { year, month, dest_path: _ } => {
+                        pending_copy += 1;
+                        scan_logs.push(format!("[copy] {} -> {}/{}", file_name, year, crate::worker::month_name(*month)));
+                    }
+                    ScanStatus::PendingMove { year, month, dest_path: _ } => {
+                        pending_move += 1;
+                        scan_logs.push(format!("[move] {} -> {}/{}", file_name, year, crate::worker::month_name(*month)));
+                    }
+                    ScanStatus::DuplicateSkipped => {
+                        duplicate += 1;
+                        scan_logs.push(format!("[skip-dup] {}", file_name));
+                    }
+                    ScanStatus::NoDateSkipped => {
+                        nodate += 1;
+                        scan_logs.push(format!("[skip-no-date] {}", file_name));
+                    }
+                    ScanStatus::Error(e) => {
+                        error += 1;
+                        scan_logs.push(format!("[skip-err] {} - {}", file_name, e));
+                    }
+                }
+            }
+
+            let summary = format!(
+                "Scan Done! Total: {}, Ready: {}, Duplicate Skips: {}, Missing Date Skips: {}, Errors: {}",
+                total_count, pending_copy + pending_move, duplicate, nodate, error
+            );
+            scan_logs.push("---".to_string());
+            scan_logs.push(summary.clone());
+            
+            self.log_batch(&scan_logs);
+            self.lbl_status.set_text(&summary);
+            self.timer.stop();
+            self.btn_scan.set_enabled(true);
+            self.btn_start.set_enabled(pending_copy + pending_move > 0);
+            *self.scan_results.borrow_mut() = results;
+            *self.is_running.borrow_mut() = false;
+        } else if let Some((moved, skipped, errors)) = sort_done_msg {
             self.progress.set_pos(1000);
             let summary = format!(
-                "Done! Processed: {}, Skipped: {}, Errors: {}",
+                "Done! Sorted: {}, Skipped: {}, Errors: {}",
                 moved, skipped, errors
             );
             self.lbl_status.set_text(&summary);
             self.log(&format!("---\r\n{}", summary));
             self.timer.stop();
-            self.btn_start.set_enabled(true);
+            self.btn_scan.set_enabled(true);
+            self.btn_start.set_enabled(false);
+            self.scan_results.borrow_mut().clear();
             *self.is_running.borrow_mut() = false;
         } else if let Some(e) = error_msg {
             self.lbl_status.set_text("Error!");
             self.log(&format!("ERROR: {}", e));
             self.timer.stop();
-            self.btn_start.set_enabled(true);
+            self.btn_scan.set_enabled(true);
+            self.btn_start.set_enabled(false);
             *self.is_running.borrow_mut() = false;
         }
     }
@@ -284,6 +414,8 @@ impl PhotoFixApp {
 /// Worker module – performs the actual photo sorting off the UI thread
 pub mod worker {
     use super::WorkerMsg;
+    use super::ScanResult;
+    use super::ScanStatus;
     use std::path::PathBuf;
     use std::sync::mpsc;
 
@@ -364,7 +496,7 @@ pub mod worker {
     }
 
     /// Month number to abbreviated name
-    fn month_name(month: u32) -> &'static str {
+    pub fn month_name(month: u32) -> &'static str {
         match month {
             1 => "01-Jan",
             2 => "02-Feb",
@@ -382,13 +514,12 @@ pub mod worker {
         }
     }
 
-    pub fn run_sort(
+    pub fn run_scan(
         src: PathBuf,
         dst: PathBuf,
         use_copy: bool,
         tx: mpsc::Sender<WorkerMsg>,
     ) {
-        // 1. Scan for images
         let images = collect_images(&src);
         let total = images.len();
 
@@ -397,11 +528,7 @@ pub mod worker {
             return;
         }
 
-        let mut moved = 0usize;
-        let mut skipped = 0usize;
-        let mut errors = 0usize;
-
-        // Stage 1: Parallel date extraction
+        // Parallel CPU parsing via Rayon
         use rayon::prelude::*;
         let processed: Vec<(PathBuf, Option<(i32, u32)>)> = images
             .par_iter()
@@ -411,20 +538,21 @@ pub mod worker {
             })
             .collect();
 
-        // Stage 2: Sequential copy/move
-        for (i, (img_path, date)) in processed.into_iter().enumerate() {
-            let file_name = img_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+        // Dry-run planning with simulated destination checks to handle collisions between files inside the same run
+        let mut occupied = std::collections::HashMap::<PathBuf, u64>::new();
+        let mut results = Vec::new();
 
-            // Get year/month
+        for (i, (img_path, date)) in processed.into_iter().enumerate() {
+            let file_name = img_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
             let (year, month) = match date {
                 Some(ym) => ym,
                 None => {
-                    skipped += 1;
-                    let _ = tx.send(WorkerMsg::Progress {
+                    results.push(ScanResult {
+                        src: img_path,
+                        status: ScanStatus::NoDateSkipped,
+                    });
+                    let _ = tx.send(WorkerMsg::ScanProgress {
                         current: i + 1,
                         total,
                         file: format!("[skip-no-date] {}", file_name),
@@ -433,43 +561,38 @@ pub mod worker {
                 }
             };
 
-            // Build destination: dst/YYYY/MM-Mon/filename
-            let dest_dir = dst
-                .join(format!("{}", year))
-                .join(month_name(month));
-
-            if let Err(e) = std::fs::create_dir_all(&dest_dir) {
-                errors += 1;
-                let _ = tx.send(WorkerMsg::Progress {
-                    current: i + 1,
-                    total,
-                    file: format!("[err] {} - {}", file_name, e),
-                });
-                continue;
-            }
-
-            let src_size = std::fs::metadata(&img_path).map(|m| m.len()).unwrap_or(0);
+            let dest_dir = dst.join(format!("{}", year)).join(month_name(month));
             let mut dest_file = dest_dir.join(&file_name);
+            let src_size = std::fs::metadata(&img_path).map(|m| m.len()).unwrap_or(0);
 
-            if dest_file.exists() {
-                let mut resolved = true;
-                // Check if it's a duplicate (size matches)
-                let dest_size = std::fs::metadata(&dest_file).map(|m| m.len()).unwrap_or(0);
-                if dest_size == src_size {
-                    skipped += 1;
-                    let _ = tx.send(WorkerMsg::Progress {
+            // Check if file exists either in reality or in our simulation plan
+            let exists = dest_file.exists() || occupied.contains_key(&dest_file);
+            if exists {
+                let size = if occupied.contains_key(&dest_file) {
+                    occupied[&dest_file]
+                } else {
+                    std::fs::metadata(&dest_file).map(|m| m.len()).unwrap_or(0)
+                };
+
+                if size == src_size {
+                    results.push(ScanResult {
+                        src: img_path.clone(),
+                        status: ScanStatus::DuplicateSkipped,
+                    });
+                    let _ = tx.send(WorkerMsg::ScanProgress {
                         current: i + 1,
                         total,
-                        file: format!("[exists-dup] {}", file_name),
+                        file: format!("[skip-dup] {}", file_name),
                     });
                     continue;
                 }
 
-                // If sizes differ, resolve the name collision using hyphen suffix format (photo-1.jpg)
+                // Resolve name collision using hyphenated suffix
                 let stem = img_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
                 let ext = img_path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
                 
                 let mut suffix = 1;
+                let resolved;
                 loop {
                     let new_name = if ext.is_empty() {
                         format!("{}-{}", stem, suffix)
@@ -478,15 +601,23 @@ pub mod worker {
                     };
                     
                     let candidate = dest_dir.join(&new_name);
-                    if candidate.exists() {
-                        let candidate_size = std::fs::metadata(&candidate).map(|m| m.len()).unwrap_or(0);
+                    let candidate_exists = candidate.exists() || occupied.contains_key(&candidate);
+                    if candidate_exists {
+                        let candidate_size = if occupied.contains_key(&candidate) {
+                            occupied[&candidate]
+                        } else {
+                            std::fs::metadata(&candidate).map(|m| m.len()).unwrap_or(0)
+                        };
+
                         if candidate_size == src_size {
-                            // Found an existing file that matches the source content exactly, treat as duplicate and skip
-                            skipped += 1;
-                            let _ = tx.send(WorkerMsg::Progress {
+                            results.push(ScanResult {
+                                src: img_path.clone(),
+                                status: ScanStatus::DuplicateSkipped,
+                            });
+                            let _ = tx.send(WorkerMsg::ScanProgress {
                                 current: i + 1,
                                 total,
-                                file: format!("[exists-dup] {}", new_name),
+                                file: format!("[skip-dup] {}", new_name),
                             });
                             resolved = false;
                             break;
@@ -498,44 +629,146 @@ pub mod worker {
                         break;
                     }
                 }
-                
-                // If resolving determined it was a duplicate and skipped
+
                 if !resolved {
                     continue;
                 }
             }
 
-            let result = if use_copy {
-                std::fs::copy(&img_path, &dest_file).map(|_| ())
+            // Reserve in simulation map
+            occupied.insert(dest_file.clone(), src_size);
+
+            let status = if use_copy {
+                ScanStatus::PendingCopy { year, month, dest_path: dest_file }
             } else {
-                std::fs::rename(&img_path, &dest_file).or_else(|_| {
-                    // rename fails across drives, fall back to copy+delete
-                    std::fs::copy(&img_path, &dest_file)?;
-                    std::fs::remove_file(&img_path)
-                })
+                ScanStatus::PendingMove { year, month, dest_path: dest_file }
             };
 
-            match result {
-                Ok(()) => {
-                    moved += 1;
-                    let _ = tx.send(WorkerMsg::Progress {
+            results.push(ScanResult {
+                src: img_path,
+                status,
+            });
+
+            let _ = tx.send(WorkerMsg::ScanProgress {
+                current: i + 1,
+                total,
+                file: format!("{}", file_name),
+            });
+        }
+
+        let _ = tx.send(WorkerMsg::ScanDone(results));
+    }
+
+    pub fn run_sort(
+        results: Vec<ScanResult>,
+        tx: mpsc::Sender<WorkerMsg>,
+    ) {
+        let total = results.len();
+        let mut moved = 0usize;
+        let mut skipped = 0usize;
+        let mut errors = 0usize;
+
+        for (i, res) in results.into_iter().enumerate() {
+            let file_name = res.src.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+            match res.status {
+                ScanStatus::PendingCopy { year, month, dest_path } => {
+                    if let Some(parent) = dest_path.parent() {
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            errors += 1;
+                            let _ = tx.send(WorkerMsg::SortProgress {
+                                current: i + 1,
+                                total,
+                                file: format!("[err] {} - {}", file_name, e),
+                            });
+                            continue;
+                        }
+                    }
+
+                    match std::fs::copy(&res.src, &dest_path) {
+                        Ok(_) => {
+                            moved += 1;
+                            let _ = tx.send(WorkerMsg::SortProgress {
+                                current: i + 1,
+                                total,
+                                file: format!("Copied: {} -> {}/{}", file_name, year, month_name(month)),
+                            });
+                        }
+                        Err(e) => {
+                            errors += 1;
+                            let _ = tx.send(WorkerMsg::SortProgress {
+                                current: i + 1,
+                                total,
+                                file: format!("[err] {} - {}", file_name, e),
+                            });
+                        }
+                    }
+                }
+                ScanStatus::PendingMove { year, month, dest_path } => {
+                    if let Some(parent) = dest_path.parent() {
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            errors += 1;
+                            let _ = tx.send(WorkerMsg::SortProgress {
+                                current: i + 1,
+                                total,
+                                file: format!("[err] {} - {}", file_name, e),
+                            });
+                            continue;
+                        }
+                    }
+
+                    let result = std::fs::rename(&res.src, &dest_path).or_else(|_| {
+                        std::fs::copy(&res.src, &dest_path)?;
+                        std::fs::remove_file(&res.src)
+                    });
+
+                    match result {
+                        Ok(_) => {
+                            moved += 1;
+                            let _ = tx.send(WorkerMsg::SortProgress {
+                                current: i + 1,
+                                total,
+                                file: format!("Moved: {} -> {}/{}", file_name, year, month_name(month)),
+                            });
+                        }
+                        Err(e) => {
+                            errors += 1;
+                            let _ = tx.send(WorkerMsg::SortProgress {
+                                current: i + 1,
+                                total,
+                                file: format!("[err] {} - {}", file_name, e),
+                            });
+                        }
+                    }
+                }
+                ScanStatus::DuplicateSkipped => {
+                    skipped += 1;
+                    let _ = tx.send(WorkerMsg::SortProgress {
                         current: i + 1,
                         total,
-                        file: format!("{} -> {}/{}", file_name, year, month_name(month)),
+                        file: format!("[skip-dup] {}", file_name),
                     });
                 }
-                Err(e) => {
-                    errors += 1;
-                    let _ = tx.send(WorkerMsg::Progress {
+                ScanStatus::NoDateSkipped => {
+                    skipped += 1;
+                    let _ = tx.send(WorkerMsg::SortProgress {
                         current: i + 1,
                         total,
-                        file: format!("[err] {} - {}", file_name, e),
+                        file: format!("[skip-no-date] {}", file_name),
+                    });
+                }
+                ScanStatus::Error(e) => {
+                    errors += 1;
+                    let _ = tx.send(WorkerMsg::SortProgress {
+                        current: i + 1,
+                        total,
+                        file: format!("[skip-err] {} - {}", file_name, e),
                     });
                 }
             }
         }
 
-        let _ = tx.send(WorkerMsg::Done { moved, skipped, errors });
+        let _ = tx.send(WorkerMsg::SortDone { moved, skipped, errors });
     }
 }
 
