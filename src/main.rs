@@ -502,19 +502,19 @@ pub mod worker {
     /// Month number to abbreviated name
     pub fn month_name(month: u32) -> &'static str {
         match month {
-            1 => "01-Jan",
-            2 => "02-Feb",
-            3 => "03-Mar",
-            4 => "04-Apr",
-            5 => "05-May",
-            6 => "06-Jun",
-            7 => "07-Jul",
-            8 => "08-Aug",
-            9 => "09-Sep",
-            10 => "10-Oct",
-            11 => "11-Nov",
-            12 => "12-Dec",
-            _ => "00-Unknown",
+            1 => "Jan",
+            2 => "Feb",
+            3 => "Mar",
+            4 => "Apr",
+            5 => "May",
+            6 => "Jun",
+            7 => "Jul",
+            8 => "Aug",
+            9 => "Sep",
+            10 => "Oct",
+            11 => "Nov",
+            12 => "Dec",
+            _ => "Unknown",
         }
     }
 
