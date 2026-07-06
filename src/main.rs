@@ -342,12 +342,21 @@ pub mod worker {
             }
         }
 
-        // Fallback: file modified time
+        // Fallback: file creation time first on Windows, then modified time
         if let Ok(meta) = std::fs::metadata(path) {
+            if let Ok(created) = meta.created() {
+                let datetime: chrono::DateTime<chrono::Local> = created.into();
+                use chrono::Datelike;
+                if datetime.year() > 1900 && datetime.year() < 2200 {
+                    return Some((datetime.year(), datetime.month()));
+                }
+            }
             if let Ok(modified) = meta.modified() {
                 let datetime: chrono::DateTime<chrono::Local> = modified.into();
                 use chrono::Datelike;
-                return Some((datetime.year(), datetime.month()));
+                if datetime.year() > 1900 && datetime.year() < 2200 {
+                    return Some((datetime.year(), datetime.month()));
+                }
             }
         }
 
@@ -392,7 +401,18 @@ pub mod worker {
         let mut skipped = 0usize;
         let mut errors = 0usize;
 
-        for (i, img_path) in images.iter().enumerate() {
+        // Stage 1: Parallel date extraction
+        use rayon::prelude::*;
+        let processed: Vec<(PathBuf, Option<(i32, u32)>)> = images
+            .par_iter()
+            .map(|img_path| {
+                let date = get_date(img_path);
+                (img_path.clone(), date)
+            })
+            .collect();
+
+        // Stage 2: Sequential copy/move
+        for (i, (img_path, date)) in processed.into_iter().enumerate() {
             let file_name = img_path
                 .file_name()
                 .unwrap_or_default()
@@ -400,14 +420,14 @@ pub mod worker {
                 .to_string();
 
             // Get year/month
-            let (year, month) = match get_date(img_path) {
+            let (year, month) = match date {
                 Some(ym) => ym,
                 None => {
                     skipped += 1;
                     let _ = tx.send(WorkerMsg::Progress {
                         current: i + 1,
                         total,
-                        file: format!("[skip] {}", file_name),
+                        file: format!("[skip-no-date] {}", file_name),
                     });
                     continue;
                 }
@@ -442,12 +462,12 @@ pub mod worker {
             }
 
             let result = if use_copy {
-                std::fs::copy(img_path, &dest_file).map(|_| ())
+                std::fs::copy(&img_path, &dest_file).map(|_| ())
             } else {
-                std::fs::rename(img_path, &dest_file).or_else(|_| {
+                std::fs::rename(&img_path, &dest_file).or_else(|_| {
                     // rename fails across drives, fall back to copy+delete
-                    std::fs::copy(img_path, &dest_file)?;
-                    std::fs::remove_file(img_path)
+                    std::fs::copy(&img_path, &dest_file)?;
+                    std::fs::remove_file(&img_path)
                 })
             };
 
